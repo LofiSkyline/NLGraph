@@ -1,5 +1,6 @@
 import openai
 import os
+import requests
 from tqdm import tqdm
 import networkx as nx
 import numpy as np
@@ -60,36 +61,45 @@ def translate(edge, n, args):
 
     return Q
 
+import requests
+import json
+from tenacity import retry, wait_random_exponential, stop_after_attempt
+
 @retry(wait=wait_random_exponential(min=1, max=30), stop=stop_after_attempt(1000))
 def predict(Q, args):
-    input = Q
-    temperature = 0
-    if args.SC == 1:
-        temperature = 0.7
-    if 'gpt' in args.model:
-        Answer_list = []
-        for text in input:
-            response = openai.ChatCompletion.create(
-            model=args.model,
-            messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": text},
-            ],
-            temperature=temperature,
-            max_tokens=args.token,
-            )
-            Answer_list.append(response["choices"][0]["message"]["content"])
-        return Answer_list
-    response = openai.Completion.create(
-    model=args.model,
-    prompt=input,
-    temperature=temperature,
-    max_tokens=args.token,
-    )
+    url = "https://chatapi.midjourney-vip.cn/v1/chat/completions"
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': 'sk-UWqcG9pMxIEKyPXTE03bA56eCcC446BeB11f84AaFb6dCdCe',  # 替换为你的 API Key
+        'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
+        'Content-Type': 'application/json'
+    }
+
     Answer_list = []
-    for i in range(len(input)):
-        Answer_list.append(response["choices"][i]["text"])
+    for text in Q:
+        payload = {
+            "model": args.model,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": text}
+            ],
+            "temperature": 0.7 if args.SC == 1 else 0,
+            "max_tokens": args.token
+        }
+        
+        print("Sending request to API...")  # 添加日志
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        print("Received response from API.")  # 添加日志
+
+        if response.status_code == 200:
+            result = response.json()
+            Answer_list.append(result["choices"][0]["message"]["content"])
+        else:
+            print(f"Request failed: {response.status_code}, {response.text}")
+            Answer_list.append("Error: Request failed")
+    
     return Answer_list
+
 
 def log(Q, res, answer, args):
     utc_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -109,13 +119,8 @@ def log(Q, res, answer, args):
         f.write("Acc: " + str(res.sum())+'/'+str(len(res)) + '\n')
         print(args, file=f)
 
+
 def main():
-    if 'OPENAI_API_KEY' in os.environ:
-        openai.api_key = os.environ['OPENAI_API_KEY']
-    else:
-        raise Exception("Missing openai key!")
-    if 'OPENAI_ORGANIZATION' in os.environ:
-        openai.organization = os.environ['OPENAI_ORGANIZATION']
     res, answer = [], []
     match args.mode:
         case "easy":
@@ -128,11 +133,11 @@ def main():
     batch_num = 20
     for i in tqdm(range((g_num + batch_num - 1) // batch_num)):
         G_list, Q_list = [], []
-        for j in range(i*batch_num, min(g_num, (i+1)*batch_num)):
-            with open("NLgraph/cycle/graph/"+args.mode+"/standard/graph"+str(j)+".txt","r") as f:
+        for j in range(i * batch_num, min(g_num, (i + 1) * batch_num)):
+            with open("NLgraph/cycle/graph/" + args.mode + "/standard/graph" + str(j) + ".txt", "r") as f:
                 n, m = [int(x) for x in next(f).split()]
                 edge = []
-                for line in f: # read rest of lines
+                for line in f:
                     edge.append([int(x) for x in line.split()])
                 G = nx.Graph()
                 G.add_nodes_from(range(n))
@@ -146,7 +151,7 @@ def main():
             sc = args.SC_num
         sc_list = []
         for k in range(sc):
-            answer_list = predict(Q_list, args)
+            answer_list = predict(Q_list, args)  # 调用已修改的 predict 函数
             sc_list.append(answer_list)
         for j in range(len(Q_list)):
             vote = 0
@@ -162,7 +167,7 @@ def main():
                 p1 = 1000000 if p1 == -1 else p1
                 p2 = 1000000 if p2 == -1 else p2
                 idx = i * batch_num + j
-                if (idx*2 < g_num and p1 < p2) or (idx*2 > g_num and p2 < p1):
+                if (idx * 2 < g_num and p1 < p2) or (idx * 2 > g_num and p2 < p1):
                     vote += 1
             if vote * 2 >= sc:
                 res.append(1)
@@ -171,8 +176,10 @@ def main():
             
     res = np.array(res)
     answer = np.array(answer)
-    log(Q, res, answer, args)
+    log(Q_list[0], res, answer, args)
     print(res.sum())
 
+
+# 运行主函数
 if __name__ == "__main__":
     main()
